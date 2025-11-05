@@ -1,0 +1,7 @@
+streamlit
+opencv-python
+pillow
+numpy
+pandas
+matplotlib
+nudenet

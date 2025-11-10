@@ -1,4 +1,4 @@
-# app.py — SafeCut Pro (Ultra-Precise Blood & Violence Detection | Clean Build)
+# app.py — SafeCut Pro (Ultra-Precise Blood & Violence Detection | Fixed Build)
 
 import os, json, tempfile, subprocess, shutil
 from pathlib import Path
@@ -22,7 +22,7 @@ except Exception:
 
 @st.cache_resource
 def load_violence_model():
-    """Optional classifier; we won’t depend on it."""
+    """Optional classifier; we won't depend on it."""
     if not HF_AVAILABLE or pipeline is None:
         return None
     try:
@@ -139,48 +139,48 @@ def extract_frames(video_path, out_dir, every_sec=1):
 
 # ========================= Blood / violence scoring =========================
 def detect_red_colors_advanced(img_bgr):
+    """🔴 High-precision red/blood detector (light-invariant, filter-robust)."""
     if img_bgr is None or img_bgr.size == 0:
         return None, 0.0
-    h, w = img_bgr.shape[:2]
-    hsv  = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
-    lab  = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2LAB)
-    ycc  = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2YCrCb)
 
-    # HSV ranges (wider V)
-    mask_hsv1 = cv2.inRange(hsv, np.array([ 0,  50,  30],np.uint8), np.array([15,255,255],np.uint8))
-    mask_hsv2 = cv2.inRange(hsv, np.array([ 0, 120,  80],np.uint8), np.array([10,255,255],np.uint8))
-    mask_hsv3 = cv2.inRange(hsv, np.array([165,120, 80],np.uint8), np.array([180,255,255],np.uint8))
+    # 🟠 تصحيح الإضاءة قبل أي شيء
+    lab = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2LAB)
+    L, A, B = cv2.split(lab)
+    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8))
+    L = clahe.apply(L)
+    img_bgr = cv2.cvtColor(cv2.merge([L, A, B]), cv2.COLOR_LAB2BGR)
 
-    L,A,B = cv2.split(lab)
-    mask_lab = cv2.bitwise_and(cv2.inRange(A,140,255), cv2.inRange(L,10,170))
+    # تحويلات لونية متعددة
+    hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
+    lab = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2LAB)
+    ycrcb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2YCrCb)
 
-    Y,Cr,Cb = cv2.split(ycc)
-    mask_ycc = cv2.bitwise_and(cv2.inRange(Cr,150,255), cv2.inRange(Cb,65,155))
+    # 🔴 نطاقات الدم (واسعة + مقاومة للظلال والفلاتر)
+    mask1 = cv2.inRange(hsv, (0, 40, 20), (10, 255, 255))
+    mask2 = cv2.inRange(hsv, (160, 40, 20), (180, 255, 255))
+    mask_hsv = cv2.bitwise_or(mask1, mask2)
 
-    b,g,r = cv2.split(img_bgr)
-    mask_bgr = cv2.bitwise_and(cv2.compare(r,g,cv2.CMP_GT), cv2.compare(r,b,cv2.CMP_GT))
-    mask_bgr = cv2.bitwise_and(mask_bgr, cv2.inRange(r,70,255))
+    mask_lab = cv2.inRange(lab[:,:,1], 135, 255)
+    mask_ycrcb = cv2.inRange(ycrcb[:,:,1], 150, 255)
 
+    # دمج الأوزان (Weighted Fusion)
     combined = (
-        0.28*mask_hsv1.astype(np.float32) +
-        0.22*mask_hsv2.astype(np.float32) +
-        0.15*mask_hsv3.astype(np.float32) +
-        0.20*mask_lab.astype(np.float32)  +
-        0.10*mask_ycc.astype(np.float32)  +
-        0.05*mask_bgr.astype(np.float32)
-    )
-    combined = np.clip(combined, 0, 255).astype(np.uint8)
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE,(7,7))
-    combined = cv2.morphologyEx(combined, cv2.MORPH_OPEN, kernel, iterations=1)
-    combined = cv2.morphologyEx(combined, cv2.MORPH_CLOSE,kernel, iterations=2)
+        0.5 * mask_hsv.astype(np.float32) +
+        0.3 * mask_lab.astype(np.float32) +
+        0.2 * mask_ycrcb.astype(np.float32)
+    ).astype(np.uint8)
 
-    red_ratio = float(np.count_nonzero(combined>80)) / (h*w + 1e-6)
-    S = hsv[:,:,1]
-    high_sat_in_red = float(np.count_nonzero((combined>80) & (S>90))) / (np.count_nonzero(combined>80)+1e-6)
-    confidence = min(1.0, red_ratio * 5.0 * (0.5 + 0.5*high_sat_in_red))
+    # تنعيم وملء الفراغات
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5,5))
+    combined = cv2.morphologyEx(combined, cv2.MORPH_CLOSE, kernel, iterations=2)
+
+    red_ratio = np.count_nonzero(combined) / (img_bgr.shape[0]*img_bgr.shape[1])
+    confidence = float(min(1.0, red_ratio * 10))
+
     return combined, confidence
 
 def filter_skin_tones(img_bgr, red_mask):
+    """🧑 إزالة الجلد البشري من اكتشاف الدم"""
     if img_bgr is None or red_mask is None: return red_mask
     ycc = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2YCrCb)
     skin = cv2.inRange(ycc, np.array([0,130,75],np.uint8), np.array([255,180,140],np.uint8))
@@ -190,6 +190,7 @@ def filter_skin_tones(img_bgr, red_mask):
     return cv2.bitwise_and(red_mask, red_mask, mask=cv2.bitwise_not(skin))
 
 def analyze_texture_features(img_bgr, mask=None):
+    """🔍 تحليل النسيج للتمييز بين الدم والألوان الحمراء الأخرى"""
     if img_bgr is None: return 0.0
     gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
     if mask is not None: gray = cv2.bitwise_and(gray, gray, mask=mask)
@@ -201,6 +202,7 @@ def analyze_texture_features(img_bgr, mask=None):
     return float(np.clip(texture_score, 0, 1))
 
 def analyze_spatial_distribution(mask):
+    """📍 تحليل التوزيع المكاني للدم"""
     if mask is None or np.sum(mask)==0: return 0.0
     contours, _ = cv2.findContours((mask>100).astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if not contours: return 0.0
@@ -217,10 +219,15 @@ def analyze_spatial_distribution(mask):
     return float(np.clip(0.6*region_score + 0.4*irregularity, 0, 1))
 
 def ultra_precise_blood_detection(img_bgr):
-    if img_bgr is None or img_bgr.size==0: return 0.0, 0.0, {}
+    """🎯 الكشف الدقيق عن الدم مع خريطة حرارية"""
+    if img_bgr is None or img_bgr.size==0:
+        return 0.0, 0.0, {}, None
+
     h,w = img_bgr.shape[:2]
     red_mask, color_conf = detect_red_colors_advanced(img_bgr)
-    if red_mask is None: return 0.0, 0.0, {}
+    if red_mask is None:
+        return 0.0, 0.0, {}, None
+
     filtered = filter_skin_tones(img_bgr, red_mask)
     txt = analyze_texture_features(img_bgr, filtered)
     sp  = analyze_spatial_distribution(filtered)
@@ -259,9 +266,21 @@ def ultra_precise_blood_detection(img_bgr):
         "saturation_ratio": float(high_sat_ratio),
         "confidence_factors": int(sum(confidence_bits)),
     }
-    return float(np.clip(blood_score,0,1)), float(conf), details
+
+    # 🎨 إنشاء خريطة حرارية للدم فقط
+    heatmap = None
+    if blood_score > 0.1:
+        # تحويل القناع إلى uint8
+        filtered_normalized = cv2.normalize(filtered, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+        # تطبيق خريطة الألوان
+        heatmap = cv2.applyColorMap(filtered_normalized, cv2.COLORMAP_JET)
+        # دمج مع الصورة الأصلية
+        heatmap = cv2.addWeighted(img_bgr, 0.6, heatmap, 0.4, 0)
+
+    return float(np.clip(blood_score,0,1)), float(conf), details, heatmap
 
 def detect_violence_motion(img_bgr, prev_frames):
+    """⚡ كشف الحركة العنيفة"""
     if img_bgr is None or len(prev_frames)==0: return 0.0
     gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
     prev = cv2.cvtColor(prev_frames[-1], cv2.COLOR_BGR2GRAY)
@@ -375,8 +394,12 @@ def build_ffmpeg_filter_string(segments, margin_sec=0.5):
         t0=max(0, seg["start"]-margin_sec); t1=seg["end"]
         action=seg["action"]; severity=seg["severity"]
         if action in ("blur","blur_mute"):
-            blur_strength = 35 if severity=="high" else 25
-            vf.append(f"boxblur={blur_strength}:enable='between(t,{t0:.2f},{t1:.2f})'")
+            # 🔵 تغبيش قوي ومتعدد الطبقات
+            blur_strength = 40 if severity=="high" else 30
+            vf.append(
+                f"boxblur={blur_strength}:enable='between(t,{t0:.2f},{t1:.2f})',"
+                f"gblur=sigma=15:enable='between(t,{t0:.2f},{t1:.2f})'"
+            )
             if action=="blur_mute":
                 af.append(f"volume=enable='between(t,{t0:.2f},{t1:.2f})':volume=0")
         elif action in ("cut","cut_blur"):
@@ -410,8 +433,10 @@ section[data-testid="stSidebar"] {background: #0d1117;}
 st.markdown("""
 <div class="sc-card">
   <h1 style="color:#6366f1; text-shadow:0 0 20px rgba(99,102,241,.3)">🎬 SafeCut Pro — Ultra-Precise Detection</h1>
-  <p style="color:#9ca3af">Detect & remove/blur only bloody/violent shots. No manual thresholds.</p>
+  <p style="color:#9ca3af">كشف تلقائي دقيق للدم والعنف تحت أي ظروف إضاءة أو فلاتر</p>
   <span class="sc-badge yellow">Violence/Blood (Auto)</span>
+  <span class="sc-badge green">Multi-Colorspace</span>
+  <span class="sc-badge blue">Skin-Filtered</span>
 </div>
 """, unsafe_allow_html=True)
 
@@ -459,6 +484,10 @@ if uploaded_file is not None:
     results=[]; hist=deque(maxlen=3)
     frame_paths = sorted(Path(frames_dir).glob("*.jpg"))
 
+    # مجلد لحفظ خرائط الحرارة
+    heatmap_dir = str(Path(tmpdir)/"heatmaps")
+    os.makedirs(heatmap_dir, exist_ok=True)
+
     for i, fp in enumerate(frame_paths):
         progress.progress((i+1)/len(frame_paths))
         status.text(f"Analyzing {i+1}/{len(frame_paths)}")
@@ -466,8 +495,12 @@ if uploaded_file is not None:
         img = cv2.imread(str(fp))
         if img is None: continue
 
-        blood_score, blood_conf, blood_det = ultra_precise_blood_detection(img)
+        blood_score, blood_conf, blood_det, heatmap = ultra_precise_blood_detection(img)
         v_motion = detect_violence_motion(img, list(hist))
+
+        # حفظ خريطة الحرارة إذا كان هناك دم
+        if heatmap is not None:
+            cv2.imwrite(str(Path(heatmap_dir)/f"heatmap_{sec:05d}.jpg"), heatmap)
 
         ai_score = 0.0
         if violence_model:
@@ -495,6 +528,7 @@ if uploaded_file is not None:
         hist.append(img)
 
     progress.empty(); status.empty()
+
     if not results:
         st.error("❌ No frames analyzed.")
         st.stop()
@@ -570,6 +604,21 @@ if uploaded_file is not None:
     # --------- Build FFmpeg filters ---------
     vf, af, cuts = build_ffmpeg_filter_string(segments, margin_sec=0.5)
 
+    # --------- عرض خرائط الحرارة ---------
+    st.markdown("### 🎨 Blood Detection Heatmaps (Sample)")
+    heatmap_files = sorted(Path(heatmap_dir).glob("*.jpg"))
+    if heatmap_files:
+        # عرض أول 5 خرائط حرارية كعينة
+        cols = st.columns(min(5, len(heatmap_files)))
+        for i, hm_path in enumerate(heatmap_files[:5]):
+            with cols[i]:
+                sec = int(Path(hm_path).stem.split("_")[-1])
+                st.image(str(hm_path), caption=f"Sec {sec}", use_container_width=True)
+        if len(heatmap_files) > 5:
+            st.info(f"📊 {len(heatmap_files)} total heatmaps generated (showing first 5)")
+    else:
+        st.success("✅ No blood detected in video")
+
     # --------- Visualization ---------
     st.markdown("### 📊 Detection Thresholds")
     c1,c2,c3,c4 = st.columns(4)
@@ -580,16 +629,25 @@ if uploaded_file is not None:
 
     st.markdown("### 📈 Detection Analysis")
     fig,(ax1,ax2)=plt.subplots(2,1,figsize=(14,8))
-    ax1.plot(df["second"], df["blood_score"], label="Blood", lw=2)
-    ax1.plot(df["second"], df["violence_motion"], label="Motion", lw=2)
-    ax1.plot(df["second"], df["final_score"], label="Final", lw=3)
-    ax1.axhline(HIGH_ON, ls="--", label=f"HIGH {HIGH_ON:.2f}")
-    ax1.axhline(MED_ON,  ls="--", label=f"MED  {MED_ON:.2f}")
-    ax1.set_xlabel("sec"); ax1.set_ylabel("score"); ax1.grid(alpha=.2); ax1.legend()
+    ax1.plot(df["second"], df["blood_score"], label="Blood", lw=2, color='#dc2626')
+    ax1.plot(df["second"], df["violence_motion"], label="Motion", lw=2, color='#f59e0b')
+    ax1.plot(df["second"], df["final_score"], label="Final", lw=3, color='#6366f1')
+    ax1.axhline(HIGH_ON, ls="--", color='#dc2626', label=f"HIGH {HIGH_ON:.2f}")
+    ax1.axhline(MED_ON,  ls="--", color='#f59e0b', label=f"MED  {MED_ON:.2f}")
+    ax1.set_xlabel("Time (seconds)", fontsize=12)
+    ax1.set_ylabel("Detection Score", fontsize=12)
+    ax1.set_title("Blood & Violence Detection Over Time", fontsize=14, fontweight='bold')
+    ax1.grid(alpha=.2)
+    ax1.legend(loc='upper right')
 
-    ax2.fill_between(df["second"], 0, high_mask, alpha=.6, label="HIGH")
-    ax2.fill_between(df["second"], 0, med_mask,  alpha=.6, label="MED")
-    ax2.set_xlabel("sec"); ax2.set_ylabel("active"); ax2.set_ylim(-.1,1.3); ax2.grid(alpha=.2); ax2.legend()
+    ax2.fill_between(df["second"], 0, high_mask, alpha=.6, color='#dc2626', label="HIGH Severity")
+    ax2.fill_between(df["second"], 0, med_mask,  alpha=.6, color='#f59e0b', label="MEDIUM Severity")
+    ax2.set_xlabel("Time (seconds)", fontsize=12)
+    ax2.set_ylabel("Active Detection", fontsize=12)
+    ax2.set_title("Detection Regions", fontsize=14, fontweight='bold')
+    ax2.set_ylim(-.1,1.3)
+    ax2.grid(alpha=.2)
+    ax2.legend(loc='upper right')
     plt.tight_layout()
     st.pyplot(fig)
 
@@ -615,6 +673,8 @@ if uploaded_file is not None:
     cut_count    = sum(1 for d in decisions.values() if d["action"] in ("cut","cut_blur"))
     total_frames = len(decisions) if len(decisions)>0 else 1
     kept_pct = kept_count/total_frames*100.0
+
+    st.markdown("### 📊 Processing Statistics")
     s1,s2,s3,s4 = st.columns(4)
     s1.markdown(f"<div class='metric-card'><span class='sc-badge green'>KEPT</span><div class='metric-value' style='color:#10b981'>{kept_count}</div><p style='color:#6b7280'>{kept_pct:.1f}%</p></div>", unsafe_allow_html=True)
     s2.markdown(f"<div class='metric-card'><span class='sc-badge yellow'>BLURRED</span><div class='metric-value' style='color:#f59e0b'>{blur_count}</div></div>", unsafe_allow_html=True)
@@ -624,7 +684,7 @@ if uploaded_file is not None:
     # --------- Technical details ---------
     vf_str = vf if vf else "None"
     af_str = af if af else "None"
-    with st.expander("🔧 Technical details"):
+    with st.expander("🔧 Technical Details"):
         st.code(f"""
 Thresholds:
   HIGH_ON={HIGH_ON:.4f}, HIGH_OFF={HIGH_OFF:.4f}
@@ -641,13 +701,13 @@ Cut Segments: {len(cuts)}
     st.markdown("### 💾 Export Processed Video")
     if st.button("🎬 Process & Export", type="primary", use_container_width=True):
         out_path = str(Path(tmpdir)/"safecut_output.mp4")
-        with st.spinner("⚙️ Processing..."):
+        with st.spinner("⚙️ Processing video with FFmpeg..."):
             r = process_video_with_filters(in_path, out_path, vf, af, cuts)
         if getattr(r, "returncode", 1)==0 and os.path.exists(out_path):
-            st.success("✅ Video processed.")
+            st.success("✅ Video processed successfully!")
             st.video(out_path)
             with open(out_path, "rb") as f:
-                st.download_button("⬇️ Download Processed", f.read(), file_name="safecut_processed.mp4", mime="video/mp4", use_container_width=True)
+                st.download_button("⬇️ Download Processed Video", f.read(), file_name="safecut_processed.mp4", mime="video/mp4", use_container_width=True)
             in_dur  = ffprobe_duration(in_path)  or 0
             out_dur = ffprobe_duration(out_path) or 0
             in_mb   = os.path.getsize(in_path)/(1024*1024)
@@ -663,12 +723,33 @@ Cut Segments: {len(cuts)}
 else:
     st.markdown("""
     <div class="sc-card">
-      <h2>🚀 How SafeCut Pro Works</h2>
+      <h2>🚀 كيف يعمل SafeCut Pro</h2>
       <ul style="color:#9ca3af; line-height:1.8">
-        <li>Advanced red/blood detection (HSV/LAB/YCrCb + texture + spatial)</li>
-        <li>Skin-tone filtering to avoid faces/skin false positives</li>
-        <li>Temporal smoothing + hysteresis to avoid flicker</li>
-        <li>Auto thresholds per-video (no manual sliders)</li>
+        <li><b>🔴 كشف متقدم للدم:</b> استخدام 3 فضاءات لونية (HSV/LAB/YCrCb) + تصحيح الإضاءة CLAHE</li>
+        <li><b>🧑 تصفية الجلد:</b> إزالة الوجوه والجلد البشري من الكشف لتجنب False Positives</li>
+        <li><b>🔍 تحليل النسيج:</b> Canny Edges + Variance للتمييز بين الدم والألوان الحمراء</li>
+        <li><b>📍 التوزيع المكاني:</b> تحليل Contours وCompactness للدم الحقيقي</li>
+        <li><b>⏱️ التنعيم الزمني:</b> Temporal Smoothing + Hysteresis لتجنب الوميض</li>
+        <li><b>🎯 عتبات تكيفية:</b> حساب تلقائي للعتبات بناءً على إحصائيات الفيديو</li>
+        <li><b>🎨 خرائط حرارية:</b> تصور دقيق للمناطق المكتشفة</li>
+      </ul>
+
+      <h3 style="color:#6366f1; margin-top:20px">🎓 التقنيات المستخدمة</h3>
+      <ul style="color:#9ca3af; line-height:1.8">
+        <li><b>CLAHE (Contrast Limited Adaptive Histogram Equalization):</b> لتحسين الكشف في الإضاءة المنخفضة</li>
+        <li><b>Multi-Colorspace Fusion:</b> دمج موزون لـ HSV (Hue/Saturation), LAB (Lightness/A-channel), YCrCb (Chroma Red)</li>
+        <li><b>Morphological Operations:</b> Closing لملء الفجوات في الدم المكتشف</li>
+        <li><b>Hysteresis Thresholding:</b> مثل Canny Edge - عتبتان (ON/OFF) لاستقرار الكشف</li>
+        <li><b>Temporal Validation:</b> التأكد من أن الكشف متسق عبر الإطارات المجاورة</li>
+      </ul>
+
+      <h3 style="color:#6366f1; margin-top:20px">💡 نصائح للحصول على أفضل النتائج</h3>
+      <ul style="color:#9ca3af; line-height:1.8">
+        <li>استخدم <b>Strict Mode</b> للفيديوهات ذات المحتوى الحساس</li>
+        <li>اختر <b>Every 0.5 sec</b> للفيديوهات السريعة أو القصيرة</li>
+        <li>اختر <b>Every 2 sec</b> للفيديوهات الطويلة لتوفير الوقت</li>
+        <li>استخدم <b>Blur + Mute</b> لإبقاء سياق المشهد مع إخفاء التفاصيل</li>
+        <li>استخدم <b>Cut Completely</b> لإزالة المحتوى بالكامل</li>
       </ul>
     </div>
     """, unsafe_allow_html=True)
